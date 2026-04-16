@@ -33,5 +33,18 @@ The **Monitor LED Config** window appears and controls all overlays. Close the w
 - Settings are saved to `config.json` in the same folder as `main.py`.
 - Use the **Run on Startup** checkbox to enable/disable a per-user registry entry on Windows.
 
+## App Icon
+- The app icon assets live in `assets/`:
+  - `assets/monitorlights_icon.png`
+  - `assets/monitorlights.ico`
+- The app loads `assets/monitorlights.ico` at runtime for the window/taskbar icon.
+
+## Build (Windows EXE with icon)
+Use PyInstaller with the bundled `.ico` so Explorer and shortcuts use the same base icon:
+
+```powershell
+pyinstaller --noconfirm --windowed --onefile --name MonitorLights --icon assets/monitorlights.ico main.py
+```
+
 ## License
 [MIT](LICENSE)

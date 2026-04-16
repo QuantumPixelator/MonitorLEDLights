@@ -5,11 +5,12 @@ import os
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                                QLabel, QSlider, QPushButton, QComboBox, QColorDialog, QCheckBox)
 from PySide6.QtCore import Qt, QTimer, QRectF, QSettings
-from PySide6.QtGui import QPainter, QColor, QPen
+from PySide6.QtGui import QPainter, QColor, QPen, QIcon, QImage
 
 # Determine the absolute path for the config file in the same directory as the script
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
+ICON_FILE = os.path.join(SCRIPT_DIR, "assets", "monitorlights.ico")
 
 class LEDOverlay(QWidget):
     def __init__(self, screen_geometry):
@@ -23,6 +24,8 @@ class LEDOverlay(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
         self.setGeometry(screen_geometry)
         
         self.base_color = QColor(0, 255, 255)
@@ -38,7 +41,14 @@ class LEDOverlay(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_animation)
         self.timer.start(16) # ~60fps
-        
+
+        # Offscreen frame; avoids stale pixels on translucent layered windows (Windows DWM).
+        self._frame_buffer = None
+
+    def resizeEvent(self, event):
+        self._frame_buffer = None
+        super().resizeEvent(event)
+
     def update_settings(self, settings_dict):
         self.base_color = QColor(settings_dict.get("color", "#00ffff"))
         self.brightness = settings_dict.get("brightness", 100) / 100.0
@@ -50,22 +60,34 @@ class LEDOverlay(QWidget):
         
     def update_animation(self):
         if self.pattern == "Chase":
-            self.dash_offset -= (self.speed / 10.0)
-            self.update()
+            dash_on = max(1.0, self.led_length / 6.0)
+            dash_off = max(1.0, dash_on * 1.5)
+            pattern_span = dash_on + dash_off
+            self.dash_offset = (self.dash_offset - (self.speed / 10.0)) % pattern_span
+            self.update(self.rect())
         elif self.pattern in ["Breathing", "Rainbow", "Strobe"]:
             self.phase += (self.speed / 50.0)
-            self.update()
+            self.update(self.rect())
         elif self.pattern == "Solid":
-            self.update()
+            self.update(self.rect())
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
         rect = self.rect()
+        w, h = rect.width(), rect.height()
+        if w <= 0 or h <= 0:
+            return
+
+        if self._frame_buffer is None or self._frame_buffer.size() != rect.size():
+            self._frame_buffer = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+
+        self._frame_buffer.fill(Qt.GlobalColor.transparent)
+
+        buf = QPainter(self._frame_buffer)
+        buf.setRenderHint(QPainter.RenderHint.Antialiasing)
+
         eff_brightness = self.brightness
         draw_color = QColor(self.base_color)
-        
+
         # Apply pattern logic
         if self.pattern == "Breathing":
             wave = (math.sin(self.phase * 0.1) + 1.0) / 2.0
@@ -76,44 +98,51 @@ class LEDOverlay(QWidget):
         elif self.pattern == "Strobe":
             if (int(self.phase * 0.2) % 2) == 0:
                 eff_brightness = 0.0
-            
-        glow_passes = 6
+
+        # Chase: fewer halo passes so motion does not read as smeared "echoes".
+        glow_passes = 3 if self.pattern == "Chase" else 5
         for i in range(glow_passes):
             glow_factor = (i + 1) / glow_passes
-            current_thickness = self.thickness * (1.0 + (glow_passes - 1 - i) * 0.5)
-            
+            current_thickness = self.thickness * (1.0 + (glow_passes - 1 - i) * 0.38)
+
             if i == glow_passes - 1:
                 alpha = eff_brightness
             else:
-                alpha = eff_brightness * 0.2 * glow_factor
-                
+                alpha = eff_brightness * 0.14 * glow_factor
+
             c = QColor(draw_color)
             c.setAlphaF(max(0.0, min(1.0, alpha)))
-            
+
             pen = QPen(c)
             pen.setWidthF(current_thickness)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            
+
             inset = current_thickness / 2.0
-            draw_rect = QRectF(rect).adjusted(inset, inset, -inset, -inset)
+            draw_rect = QRectF(0, 0, w, h).adjusted(inset, inset, -inset, -inset)
 
             if self.pattern == "Chase":
                 dash_len = self.led_length
-                # dash pattern: [line_length, space_length]
-                pen.setDashPattern([dash_len / 5.0, dash_len / 5.0])
+                pen.setDashPattern([max(1.0, dash_len / 6.0), max(1.0, dash_len / 4.0)])
                 pen.setDashOffset(self.dash_offset)
             else:
                 pen.setStyle(Qt.PenStyle.SolidLine)
-                
-            painter.setPen(pen)
-            painter.drawRect(draw_rect)
+
+            buf.setPen(pen)
+            buf.drawRect(draw_rect)
+
+        buf.end()
+
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.drawImage(0, 0, self._frame_buffer)
 
 class ControlPanel(QWidget):
     def __init__(self, overlays):
         super().__init__()
         self.overlays = overlays
         self.setWindowTitle("Monitor LED Config")
+        self.setWindowIcon(QApplication.windowIcon())
         
         self.settings = self.load_config()
         self.init_ui()
@@ -275,6 +304,8 @@ class ControlPanel(QWidget):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Monitor LED Overlay")
+    if os.path.exists(ICON_FILE):
+        app.setWindowIcon(QIcon(ICON_FILE))
     
     overlays = []
     screens = app.screens()
