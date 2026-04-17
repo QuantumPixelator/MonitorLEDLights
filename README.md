@@ -12,7 +12,11 @@ A Python app that draws a glowing LED light strip around the edges of each detec
 - Save and load configuration from `config.json`
 - Optional: Run on Windows startup (per-user registry entry)
 - Cross-platform (Windows, macOS, Linux)
-
+---
+## Recent Changes
+- *** Added chase:rainbow to the available patterns ***
+- *** Reduced the "ghosting" effect of the chase patterns ***
+---
 ## Quick Start
 
 1. Activate your virtual environment (if applicable):
